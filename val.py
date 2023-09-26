@@ -281,6 +281,12 @@ def run(
     # Print results
     pf = '%22s' + '%11i' * 2 + '%11.3g' * 4  # print format
     LOGGER.info(pf % ('all', seen, nt.sum(), mp, mr, map50, map))
+    with open(f"{save_dir}/metrics.txt", 'w') as f:
+        f.write(('%22s' + '%11s' * 6) % ('Class', 'Images', 'Instances', 'P', 'R', 'mAP50', 'mAP50-95'))
+        f.write("\n")
+        f.write(pf % ('all', seen, nt.sum(), mp, mr, map50, map))
+        f.write("\n")
+
     if nt.sum() == 0:
         LOGGER.warning(f'WARNING ⚠️ no labels found in {task} set, can not compute metrics without labels')
 
@@ -288,6 +294,9 @@ def run(
     if (verbose or (nc < 50 and not training)) and nc > 1 and len(stats):
         for i, c in enumerate(ap_class):
             LOGGER.info(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
+            with open(f"{save_dir}/metrics.txt", 'a') as f:
+                f.write(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
+                f.write("\n")
 
     # Print speeds
     t = tuple(x.t / seen * 1E3 for x in dt)  # speeds per image
@@ -347,7 +356,7 @@ def parse_opt():
     parser.add_argument('--imgsz', '--img', '--img-size', type=int, default=640, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.001, help='confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.6, help='NMS IoU threshold')
-    parser.add_argument('--max-det', type=int, default=300, help='maximum detections per image')
+    parser.add_argument('--max-det', type=int, default=500, help='maximum detections per image')
     parser.add_argument('--task', default='val', help='train, val, test, speed or study')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--workers', type=int, default=8, help='max dataloader workers (per RANK in DDP mode)')
@@ -364,6 +373,16 @@ def parse_opt():
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
     parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
     opt = parser.parse_args()
+    # model_to_use = "YoloS"
+    # opt.conf_thres = 0.347
+    # opt.task = "val"
+    # opt.name = "full_model"
+    # opt.project = f"{ROOT}/runs/val/{model_to_use}/{opt.task}"
+    # opt.data = "/home/manos/data/weedDataset/small_annots/big_annots/weed.yaml"
+    # opt.weights = f"{ROOT}/runs/train/{model_to_use}/{opt.name}/weights/best.pt"
+    # opt.imgsz = 2456
+    # opt.batch_size = 8
+    opt.half = True
     opt.data = check_yaml(opt.data)  # check YAML
     opt.save_json |= opt.data.endswith('coco.yaml')
     opt.save_txt |= opt.save_hybrid
