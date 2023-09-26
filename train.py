@@ -644,4 +644,15 @@ def run(**kwargs):
 
 if __name__ == '__main__':
     opt = parse_opt()
+    opt.epochs = 2
+    opt.batch_size= 128
+    opt.weights= ''
+    name_yaml = "nanodet_simple_big_ch"
+    opt.cfg= f"./models/{name_yaml}.yaml"
+    opt.data = "/media/manos/hdd/Binary_Datasets/Football/192x192_3pos_36neg_padded_augmented_size_0.9-2.0/weed.yaml"
+    opt.imgsz =160
+    opt.project = "./runs/train/football/Nanodet"
+    opt.name = name_yaml
+    opt.patience = 30
+    opt.cache = "ram"
     main(opt)

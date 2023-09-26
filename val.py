@@ -142,7 +142,9 @@ def run(
         # Load model
         model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data, fp16=half)
         stride, pt, jit, engine = model.stride, model.pt, model.jit, model.engine
-        imgsz = check_img_size(imgsz, s=stride)  # check image size
+        gs = max(stride, 32)
+        imgsz = check_img_size(imgsz, s=gs, floor=gs * 2)  # check image size
+        # imgsz = check_img_size(imgsz, s=stride)  # check image size
         half = model.fp16  # FP16 supported on limited backends with CUDA
         if engine:
             batch_size = model.batch_size
@@ -313,8 +315,6 @@ def run(
     if save_json and len(jdict):
         w = Path(weights[0] if isinstance(weights, list) else weights).stem if weights is not None else ''  # weights
         anno_json = str(Path('../datasets/coco/annotations/instances_val2017.json'))  # annotations
-        if not os.path.exists(anno_json):
-            anno_json = os.path.join(data['path'], 'annotations', 'instances_val2017.json')
         pred_json = str(save_dir / f'{w}_predictions.json')  # predictions
         LOGGER.info(f'\nEvaluating pycocotools mAP... saving {pred_json}...')
         with open(pred_json, 'w') as f:
@@ -348,15 +348,126 @@ def run(
     return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t
 
 
+@smart_inference_mode()
+def run_b(
+        data,
+        weights=None,  # model.pt path(s)
+        batch_size=32,  # batch size
+        imgsz=640,  # inference size (pixels)
+        conf_thres=0.001,  # confidence threshold
+        iou_thres=0.6,  # NMS IoU threshold
+        max_det=300,  # maximum detections per image
+        task='val',  # train, val, test, speed or study
+        device='',  # cuda device, i.e. 0 or 0,1,2,3 or cpu
+        workers=8,  # max dataloader workers (per RANK in DDP mode)
+        single_cls=False,  # treat as single-class dataset
+        augment=False,  # augmented inference
+        verbose=False,  # verbose output
+        save_txt=False,  # save results to *.txt
+        save_hybrid=False,  # save label+prediction hybrid results to *.txt
+        save_conf=False,  # save confidences in --save-txt labels
+        save_json=False,  # save a COCO-JSON results file
+        project=ROOT / 'runs/val',  # save to project/name
+        name='exp',  # save to project/name
+        exist_ok=False,  # existing project/name ok, do not increment
+        half=True,  # use FP16 half-precision inference
+        dnn=False,  # use OpenCV DNN for ONNX inference
+        model=None,
+        dataloader=None,
+        save_dir=Path(''),
+        plots=True,
+        callbacks=Callbacks(),
+        compute_loss=None,
+):
+    # Initialize/load model and set device
+    training = model is not None
+    if training:  # called by train.py
+        device, pt, jit, engine = next(model.parameters()).device, True, False, False  # get model device, PyTorch model
+        half &= device.type != 'cpu'  # half precision only supported on CUDA
+        model.half() if half else model.float()
+    else:  # called directly
+        device = select_device(device, batch_size=batch_size)
+
+        # Directories
+        save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
+        (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
+
+        # Load model
+        model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data, fp16=half)
+        stride, pt, jit, engine = model.stride, model.pt, model.jit, model.engine
+        gs = max(stride, 32)
+        imgsz = check_img_size(imgsz, s=gs, floor=gs * 2)  # check image size
+        half = model.fp16  # FP16 supported on limited backends with CUDA
+        if engine:
+            batch_size = model.batch_size
+        else:
+            device = model.device
+            if not (pt or jit):
+                batch_size = 1  # export.py models default to batch-size 1
+                LOGGER.info(f'Forcing --batch-size 1 square inference (1,3,{imgsz},{imgsz}) for non-PyTorch models')
+
+        # Data
+        data = check_dataset(data)  # check
+
+    # Configure
+    model.eval()
+    cuda = device.type != 'cpu'
+    nc = 1 if single_cls else int(data['nc'])  # number of classes
+
+
+    # Dataloader
+    if not training:
+        if pt and not single_cls:  # check --weights are trained on --data
+            ncm = model.model.nc
+            assert ncm == nc, f'{weights} ({ncm} classes) trained on different --data than what you passed ({nc} ' \
+                              f'classes). Pass correct combination of --weights and --data that are trained together.'
+        model.warmup(imgsz=(1 if pt else batch_size, 3, imgsz[0], imgsz[1]))  # warmup
+        pad, rect = (0.0, False) if task == 'speed' else (0.5, pt)  # square inference for benchmarks
+        task = task if task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
+        dataloader = create_dataloader(data[task],
+                                       imgsz,
+                                       batch_size,
+                                       stride,
+                                       single_cls,
+                                       pad=pad,
+                                       rect=rect,
+                                       workers=workers,
+                                       prefix=colorstr(f'{task}: '))[0]
+
+    seen = 0
+    s = ('%22s' + '%11s' * 6) % ('Class', 'Images', 'Instances', 'P', 'R', 'mAP50', 'mAP50-95')
+    tp, fp, p, r, f1, mp, mr, map50, ap50, map = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    loss = torch.zeros(3, device=device)
+    dt = Profile(), Profile(), Profile()  # profiling times
+    callbacks.run('on_val_start')
+    pbar = tqdm(dataloader, desc=s, bar_format=TQDM_BAR_FORMAT)  # progress bar
+    for batch_i, im in enumerate(pbar):
+        callbacks.run('on_val_batch_start')
+        with dt[0]:
+            if cuda:
+                im = im.to(device)
+                # targets = targets.to(device)
+            im = im.half() if half else im.float()  # uint8 to fp16/32
+            im /= 255  # 0 - 255 to 0.0 - 1.0
+            nb, _, height, width = im.shape  # batch size, channels, height, width
+        # Inference
+        with dt[1]:
+            _, _ = model(im) if compute_loss else (model(im, augment=augment), None)
+        seen += 1
+    t = tuple(x.t / seen * 1E3 for x in dt)  # speeds per image
+    maps = np.zeros(nc) + map
+    return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t
+
+
 def parse_opt():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data', type=str, default=ROOT / 'data/coco128.yaml', help='dataset.yaml path')
     parser.add_argument('--weights', nargs='+', type=str, default=ROOT / 'yolov5s.pt', help='model path(s)')
     parser.add_argument('--batch-size', type=int, default=32, help='batch size')
-    parser.add_argument('--imgsz', '--img', '--img-size', type=int, default=640, help='inference size (pixels)')
+    parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640, 640], help='image (h, w)')
     parser.add_argument('--conf-thres', type=float, default=0.001, help='confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.6, help='NMS IoU threshold')
-    parser.add_argument('--max-det', type=int, default=500, help='maximum detections per image')
+    parser.add_argument('--max-det', type=int, default=300, help='maximum detections per image')
     parser.add_argument('--task', default='val', help='train, val, test, speed or study')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--workers', type=int, default=8, help='max dataloader workers (per RANK in DDP mode)')
@@ -373,16 +484,15 @@ def parse_opt():
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
     parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
     opt = parser.parse_args()
-    # model_to_use = "YoloS"
-    # opt.conf_thres = 0.347
-    # opt.task = "val"
-    # opt.name = "full_model"
-    # opt.project = f"{ROOT}/runs/val/{model_to_use}/{opt.task}"
-    # opt.data = "/home/manos/data/weedDataset/small_annots/big_annots/weed.yaml"
-    # opt.weights = f"{ROOT}/runs/train/{model_to_use}/{opt.name}/weights/best.pt"
-    # opt.imgsz = 2456
-    # opt.batch_size = 8
-    opt.half = True
+    opt.batch_size=8
+    modelused="football/YoloS"
+    name="resized/no_pretrained_full_model2"
+    subdata="192x192_3pos_36neg_padded_augmented_size_0.9-2.0"
+    opt.imgsz = 160
+    opt.task = "test"
+    opt.weights=f"./runs/train/{modelused}/{name}/weights/best.pt"
+    opt.data=f"/media/manos/hdd/Binary_Datasets/Football/{subdata}/weed.yaml"
+    opt.project=f"./runs/val/{modelused}/{opt.task}/{subdata}"
     opt.data = check_yaml(opt.data)  # check YAML
     opt.save_json |= opt.data.endswith('coco.yaml')
     opt.save_txt |= opt.save_hybrid

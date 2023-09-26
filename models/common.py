@@ -77,6 +77,16 @@ class DWConv(Conv):
         super().__init__(c1, c2, k, s, g=math.gcd(c1, c2), d=d, act=act)
 
 
+class DWPWConv(nn.Module):
+    def __init__(self, c1, c2, k=1, s=1, p=0, d=1, act=True, g=None, pool=True):
+        super().__init__()
+        self.depthwise = Conv(c1, c1, k, s=s, p=p, d=d, g=c1, act=act)
+        self.pointwise = Conv(c1, c2, k=1, s=1, p=0, act=act)
+
+    def forward(self, x):
+        return self.pointwise(self.depthwise(x))
+
+
 class DWConvTranspose2d(nn.ConvTranspose2d):
     # Depth-wise transpose convolution
     def __init__(self, c1, c2, k=1, s=1, p1=0, p2=0):  # ch_in, ch_out, kernel, stride, padding, padding_out
@@ -280,7 +290,7 @@ class GhostBottleneck(nn.Module):
             DWConv(c_, c_, k, s, act=False) if s == 2 else nn.Identity(),  # dw
             GhostConv(c_, c2, 1, 1, act=False))  # pw-linear
         self.shortcut = nn.Sequential(DWConv(c1, c1, k, s, act=False), Conv(c1, c2, 1, 1,
-                                                                            act=False)) if s == 2 else nn.Identity()
+                                                                            act=False)) if (s > 1 or c1 != c2) else nn.Identity()
 
     def forward(self, x):
         return self.conv(x) + self.shortcut(x)

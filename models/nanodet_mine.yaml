@@ -1,0 +1,53 @@
+# YOLOv5 🚀 by Ultralytics, AGPL-3.0 license
+
+# Parameters
+nc: 80  # number of classes
+depth_multiple: 1  # model depth multiple
+width_multiple: 1  # layer channel multiple
+anchors:
+  - [10,13, 16,30, 33,23]  # P3/8
+  - [30,61, 62,45, 59,119]  # P4/16
+  - [116,90, 156,198, 373,326]  # P5/32
+
+# YOLOv5 v6.0 backbone
+backbone:
+  # [from, number, module, args]
+  [[-1, 1, Conv, [32, 3, 2]],  # 0-P1/2
+   [-1, 1, Conv, [64, 3, 2]],  # 1-P2/4
+   [-1, 1, Conv, [64, 3, 1]],
+   [-1, 1, Conv, [128, 3, 2]],  # 3-P3/8
+   [-1, 1, Conv, [128, 3, 1]],
+   [-1, 1, Conv, [256, 3, 2]],  # 5-P4/16
+   [-1, 1, Conv, [256, 3, 1]],
+   [-1, 1, Conv, [512, 3, 2]],  # 7-P5/32
+   [-1, 1, Conv, [512, 3, 1]],
+   [-1, 1, Conv, [512, 3, 1]],  # 9
+   [-1, 1, Conv, [512, 3, 1]],  # 10
+  ]
+
+
+# YOLOv5 v6.0 head
+head:
+  [ [-1, 1, Conv, [256, 1, 1]],  # 11
+
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']], # 12
+    [6, 1, Conv, [256, 1, 1]],  # 13
+    [[12, -1], 1, Concat, [1]],  # 14 # cat backbone p4
+    [-1, 1, GhostBottleneck, [256, 3, 1]],  # 15 # 7
+
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],  # 16
+    [4, 1, Conv, [256, 1, 1]],  # 17
+    [[16, -1], 1, Concat, [1]],   # 18 # cat backbone p3
+    [-1, 1, GhostBottleneck, [256, 3, 1]],  # 19 (P3/8-small)
+
+
+    [-1, 1, Conv, [256, 5, 2, 2]],  # 20 # Downsample
+    [[-1, 15], 1, Concat, [1]], # 21  # cat head p4
+    [-1, 1, GhostBottleneck, [256, 3, 1]], # 22 (P4/16-medium)
+
+    [-1, 1, Conv, [256, 5, 2, 2 ]],  # 23  # Downsample
+    [[-1, 11], 1, Concat, [1]],  # 24  # cat head P5
+    [-1, 1, GhostBottleneck, [256, 3, 1]], # 25 (P5/32-large)
+
+    [[19, 22, 25], 1, Detect, [nc, anchors]],  # Detect(P3, P4, P5)
+  ]

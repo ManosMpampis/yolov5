@@ -312,7 +312,7 @@ def export_coreml(model, im, file, int8, half, nms, prefix=colorstr('CoreML:')):
 
 
 @try_export
-def export_engine(model, im, file, half, dynamic, simplify, workspace=4, verbose=False, prefix=colorstr('TensorRT:')):
+def export_engine(model, im, file, half, dynamic, simplify, workspace=4, verbose=False, prefix=colorstr('TensorRT:'), lazy=True):
     # YOLOv5 TensorRT export https://developer.nvidia.com/tensorrt
     assert im.device.type != 'cpu', 'export running on CPU but must be on GPU, i.e. `python export.py --device 0`'
     try:
@@ -335,6 +335,9 @@ def export_engine(model, im, file, half, dynamic, simplify, workspace=4, verbose
     LOGGER.info(f'\n{prefix} starting export with TensorRT {trt.__version__}...')
     assert onnx.exists(), f'failed to export ONNX file: {onnx}'
     f = file.with_suffix('.engine')  # TensorRT engine file
+    if lazy:
+        if os.path.isfile(f):
+            return f, None
     logger = trt.Logger(trt.Logger.INFO)
     if verbose:
         logger.min_severity = trt.Logger.Severity.VERBOSE
@@ -719,6 +722,7 @@ def run(
         topk_all=100,  # TF.js NMS: topk for all classes to keep
         iou_thres=0.45,  # TF.js NMS: IoU threshold
         conf_thres=0.25,  # TF.js NMS: confidence threshold
+        m_name=""
 ):
     t = time.time()
     include = [x.lower() for x in include]  # to lowercase
@@ -741,8 +745,8 @@ def run(
         assert device.type == 'cpu', '--optimize not compatible with cuda devices, i.e. use --device cpu'
 
     # Input
-    gs = int(max(model.stride))  # grid size (max stride)
-    imgsz = [check_img_size(x, gs) for x in imgsz]  # verify img_size are gs-multiples
+    gs = max(int(max(model.stride)), 32)  # grid size (max stride)
+    imgsz = [check_img_size(x, gs, floor=gs * 2) for x in imgsz]  # verify img_size are gs-multiples
     im = torch.zeros(batch_size, 3, *imgsz).to(device)  # image size(1,3,320,192) BCHW iDetection
 
     # Update model
@@ -755,6 +759,14 @@ def run(
 
     for _ in range(2):
         y = model(im)  # dry runs
+
+    from torch.utils.tensorboard import SummaryWriter
+    writer = SummaryWriter(f'./graphs/Nano/{m_name}/')
+    writer.add_graph(model.to("cpu"), im.to("cpu"))
+    writer.close()
+    model = model.to(device)
+    im = im.to(device)
+
     if half and not coreml:
         im, model = im.half(), model.half()  # to FP16
     shape = tuple((y[0] if isinstance(y, tuple) else y).shape)  # model output shape
