@@ -127,6 +127,7 @@ def run(
         compute_loss=None,
 ):
     # Initialize/load model and set device
+    imgsz = [imgsz, imgsz] if isinstance(imgsz, int) else imgsz
     training = model is not None
     if training:  # called by train.py
         device, pt, jit, engine = next(model.parameters()).device, True, False, False  # get model device, PyTorch model
@@ -143,8 +144,8 @@ def run(
         model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data, fp16=half)
         stride, pt, jit, engine = model.stride, model.pt, model.jit, model.engine
         gs = max(stride, 32)
-        imgsz = check_img_size(imgsz, s=gs, floor=gs * 2)  # check image size
-        # imgsz = check_img_size(imgsz, s=stride)  # check image size
+        for i, img_size in enumerate(imgsz):
+            imgsz[i] = check_img_size(img_size, s=gs, floor=gs * 2)  # check image size
         half = model.fp16  # FP16 supported on limited backends with CUDA
         if engine:
             batch_size = model.batch_size
@@ -171,8 +172,9 @@ def run(
             ncm = model.model.nc
             assert ncm == nc, f'{weights} ({ncm} classes) trained on different --data than what you passed ({nc} ' \
                               f'classes). Pass correct combination of --weights and --data that are trained together.'
-        model.warmup(imgsz=(1 if pt else batch_size, 3, imgsz, imgsz))  # warmup
+        model.warmup(imgsz=(1 if pt else batch_size, 3, imgsz[0], imgsz[1]))  # warmup
         pad, rect = (0.0, False) if task == 'speed' else (0.5, pt)  # square inference for benchmarks
+        task_before = task
         task = task if task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
         dataloader = create_dataloader(data[task],
                                        imgsz,
@@ -182,7 +184,8 @@ def run(
                                        pad=pad,
                                        rect=rect,
                                        workers=workers,
-                                       prefix=colorstr(f'{task}: '))[0]
+                                       prefix=colorstr(f'{task}: '),
+                                       profile=task_before)[0]
 
     seen = 0
     confusion_matrix = ConfusionMatrix(nc=nc)
@@ -345,117 +348,6 @@ def run(
     maps = np.zeros(nc) + map
     for i, c in enumerate(ap_class):
         maps[c] = ap[i]
-    return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t
-
-
-@smart_inference_mode()
-def run_b(
-        data,
-        weights=None,  # model.pt path(s)
-        batch_size=32,  # batch size
-        imgsz=640,  # inference size (pixels)
-        conf_thres=0.001,  # confidence threshold
-        iou_thres=0.6,  # NMS IoU threshold
-        max_det=300,  # maximum detections per image
-        task='val',  # train, val, test, speed or study
-        device='',  # cuda device, i.e. 0 or 0,1,2,3 or cpu
-        workers=8,  # max dataloader workers (per RANK in DDP mode)
-        single_cls=False,  # treat as single-class dataset
-        augment=False,  # augmented inference
-        verbose=False,  # verbose output
-        save_txt=False,  # save results to *.txt
-        save_hybrid=False,  # save label+prediction hybrid results to *.txt
-        save_conf=False,  # save confidences in --save-txt labels
-        save_json=False,  # save a COCO-JSON results file
-        project=ROOT / 'runs/val',  # save to project/name
-        name='exp',  # save to project/name
-        exist_ok=False,  # existing project/name ok, do not increment
-        half=True,  # use FP16 half-precision inference
-        dnn=False,  # use OpenCV DNN for ONNX inference
-        model=None,
-        dataloader=None,
-        save_dir=Path(''),
-        plots=True,
-        callbacks=Callbacks(),
-        compute_loss=None,
-):
-    # Initialize/load model and set device
-    training = model is not None
-    if training:  # called by train.py
-        device, pt, jit, engine = next(model.parameters()).device, True, False, False  # get model device, PyTorch model
-        half &= device.type != 'cpu'  # half precision only supported on CUDA
-        model.half() if half else model.float()
-    else:  # called directly
-        device = select_device(device, batch_size=batch_size)
-
-        # Directories
-        save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
-        (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
-
-        # Load model
-        model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data, fp16=half)
-        stride, pt, jit, engine = model.stride, model.pt, model.jit, model.engine
-        gs = max(stride, 32)
-        imgsz = check_img_size(imgsz, s=gs, floor=gs * 2)  # check image size
-        half = model.fp16  # FP16 supported on limited backends with CUDA
-        if engine:
-            batch_size = model.batch_size
-        else:
-            device = model.device
-            if not (pt or jit):
-                batch_size = 1  # export.py models default to batch-size 1
-                LOGGER.info(f'Forcing --batch-size 1 square inference (1,3,{imgsz},{imgsz}) for non-PyTorch models')
-
-        # Data
-        data = check_dataset(data)  # check
-
-    # Configure
-    model.eval()
-    cuda = device.type != 'cpu'
-    nc = 1 if single_cls else int(data['nc'])  # number of classes
-
-
-    # Dataloader
-    if not training:
-        if pt and not single_cls:  # check --weights are trained on --data
-            ncm = model.model.nc
-            assert ncm == nc, f'{weights} ({ncm} classes) trained on different --data than what you passed ({nc} ' \
-                              f'classes). Pass correct combination of --weights and --data that are trained together.'
-        model.warmup(imgsz=(1 if pt else batch_size, 3, imgsz[0], imgsz[1]))  # warmup
-        pad, rect = (0.0, False) if task == 'speed' else (0.5, pt)  # square inference for benchmarks
-        task = task if task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
-        dataloader = create_dataloader(data[task],
-                                       imgsz,
-                                       batch_size,
-                                       stride,
-                                       single_cls,
-                                       pad=pad,
-                                       rect=rect,
-                                       workers=workers,
-                                       prefix=colorstr(f'{task}: '))[0]
-
-    seen = 0
-    s = ('%22s' + '%11s' * 6) % ('Class', 'Images', 'Instances', 'P', 'R', 'mAP50', 'mAP50-95')
-    tp, fp, p, r, f1, mp, mr, map50, ap50, map = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-    loss = torch.zeros(3, device=device)
-    dt = Profile(), Profile(), Profile()  # profiling times
-    callbacks.run('on_val_start')
-    pbar = tqdm(dataloader, desc=s, bar_format=TQDM_BAR_FORMAT)  # progress bar
-    for batch_i, im in enumerate(pbar):
-        callbacks.run('on_val_batch_start')
-        with dt[0]:
-            if cuda:
-                im = im.to(device)
-                # targets = targets.to(device)
-            im = im.half() if half else im.float()  # uint8 to fp16/32
-            im /= 255  # 0 - 255 to 0.0 - 1.0
-            nb, _, height, width = im.shape  # batch size, channels, height, width
-        # Inference
-        with dt[1]:
-            _, _ = model(im) if compute_loss else (model(im, augment=augment), None)
-        seen += 1
-    t = tuple(x.t / seen * 1E3 for x in dt)  # speeds per image
-    maps = np.zeros(nc) + map
     return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t
 
 

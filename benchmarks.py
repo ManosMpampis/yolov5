@@ -48,7 +48,6 @@ from utils import notebook_init
 from utils.general import LOGGER, check_yaml, file_size, print_args
 from utils.torch_utils import select_device
 from val import run as val_det
-from val import run_b as val_det_b
 
 
 def run(
@@ -63,7 +62,6 @@ def run(
         hard_fail=False,  # throw error on benchmark failure
         m_name=""
 ):
-    imgsz_list = isinstance(imgsz, list) or isinstance(imgsz, tuple)
     y, t = [], time.time()
     device = select_device(device)
     model_type = type(attempt_load(weights, fuse=False))  # DetectionModel, SegmentationModel, etc.
@@ -95,10 +93,7 @@ def run(
                     result = val_seg(data, w, batch_size, imgsz, plots=False, device=device, task='speed', half=half)
                     metric = result[0][7]  # (box(p, r, map50, map), mask(p, r, map50, map), *loss(box, obj, cls))
                 else:  # DetectionModel:
-                    if not imgsz_list:
-                        result = val_det(data, w, batch_size, imgsz, plots=False, device=device, task='speed', half=half)
-                    else:
-                        result = val_det_b(data, w, batch_size, imgsz, plots=False, device=device, task='speed', half=half)
+                    result = val_det(data, w, batch_size, imgsz, plots=False, device=device, task='speed', half=half)
                     metric = result[0][3]  # (p, r, map50, map, *loss(box, obj, cls))
                 speed = result[2][1]  # times (preprocess, inference, postprocess)
                 y.append([name, round(file_size(w), 1), round(metric, 4), round(speed, 2), 1000/round(speed, 2)])  # MB, mAP, t_inference
@@ -114,7 +109,7 @@ def run(
     LOGGER.info('\n')
     parse_opt()
     notebook_init()  # print system info
-    c = ['Format', 'Size (MB)', 'mAP50-95', 'Inference time (ms)', 'Fps'] if map else ['Format', 'Export', '', '', '']
+    c = ['Format', 'Size (MB)', 'mAP50-95', 'Inference time (ms)', 'Post time (ms)', 'Pre time (ms)', 'Fps', 'Post Fps', 'Pre Fps'] if map else ['Format', 'Export', '', '', '']
     py = pd.DataFrame(y, columns=c)
     LOGGER.info(f'\nBenchmarks complete ({time.time() - t:.2f}s)')
     LOGGER.info(str(py if map else py.iloc[:, :2]))

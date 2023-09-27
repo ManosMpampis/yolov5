@@ -116,14 +116,14 @@ def create_dataloader(path,
                       quad=False,
                       prefix='',
                       shuffle=False,
-                      seed=0):
+                      seed=0,
+                      profile=None):
     imgsz_list = isinstance(imgsz, list) or isinstance(imgsz, tuple)
     if rect and shuffle:
         LOGGER.warning('WARNING ⚠️ --rect is incompatible with DataLoader shuffle, setting shuffle=False')
         shuffle = False
     with torch_distributed_zero_first(rank):  # init dataset *.cache only once if DDP
-        dataset_loader = LoadTemp if imgsz_list else LoadImagesAndLabels
-        dataset = dataset_loader(
+        dataset = LoadImagesAndLabels(
             path,
             imgsz,
             batch_size,
@@ -136,7 +136,8 @@ def create_dataloader(path,
             stride=int(stride),
             pad=pad,
             image_weights=image_weights,
-            prefix=prefix)
+            prefix=prefix,
+            profile=profile)
 
     batch_size = min(batch_size, len(dataset))
     nd = torch.cuda.device_count()  # number of CUDA devices
@@ -145,14 +146,13 @@ def create_dataloader(path,
     loader = DataLoader if image_weights else InfiniteDataLoader  # only DataLoader allows for attribute updates
     generator = torch.Generator()
     generator.manual_seed(6148914691236517205 + seed + RANK)
-    collate_fn = None if imgsz_list else (LoadImagesAndLabels.collate_fn4 if quad else LoadImagesAndLabels.collate_fn)
     return loader(dataset,
                   batch_size=batch_size,
                   shuffle=shuffle and sampler is None,
                   num_workers=nw,
                   sampler=sampler,
                   pin_memory=PIN_MEMORY,
-                  collate_fn=collate_fn,
+                  collate_fn=LoadImagesAndLabels.collate_fn4 if quad else LoadImagesAndLabels.collate_fn,
                   worker_init_fn=seed_worker,
                   generator=generator), dataset
 
@@ -453,7 +453,9 @@ class LoadImagesAndLabels(Dataset):
                  stride=32,
                  pad=0.0,
                  min_items=0,
-                 prefix=''):
+                 prefix='',
+                 profile=None):
+        self.profile=None
         self.img_size = img_size
         self.augment = augment
         self.hyp = hyp
@@ -675,7 +677,7 @@ class LoadImagesAndLabels(Dataset):
 
             # Letterbox
             shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
-            img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
+            img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment, no_pad=True if self.profile == "speed" else False)
             shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
 
             labels = self.labels[index].copy()
@@ -920,39 +922,6 @@ class LoadImagesAndLabels(Dataset):
 
         return torch.stack(im4, 0), torch.cat(label4, 0), path4, shapes4
 
-class LoadTemp(Dataset):
-    # YOLOv5 train_loader/val_loader, loads images and labels for training and validation
-    cache_version = 0.6  # dataset labels *.cache version
-    rand_interp_methods = [cv2.INTER_NEAREST, cv2.INTER_LINEAR, cv2.INTER_CUBIC, cv2.INTER_AREA, cv2.INTER_LANCZOS4]
-
-    def __init__(self,
-                 path,
-                 img_size=640,
-                 batch_size=16,
-                 augment=False,
-                 hyp=None,
-                 rect=False,
-                 image_weights=False,
-                 cache_images=False,
-                 single_cls=False,
-                 stride=32,
-                 pad=0.0,
-                 min_items=0,
-                 prefix=''):
-        self.path = path
-        self.img_size = img_size
-        self.batch_size = batch_size
-        self.augment = augment
-        self.hyp = hyp
-        self.stride = stride
-        self.min_items = min_items
-
-    def __len__(self):
-        return self.min_items
-
-    def __getitem__(self, index):
-        im = torch.empty(3, self.img_size[0], self.img_size[1])
-        return im
 
 # Ancillary functions --------------------------------------------------------------------------------------------------
 def flatten_recursive(path=DATASETS_DIR / 'coco128'):
