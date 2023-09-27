@@ -455,7 +455,7 @@ class LoadImagesAndLabels(Dataset):
                  min_items=0,
                  prefix='',
                  profile=None):
-        self.profile=None
+        self.profile = profile
         self.img_size = img_size
         self.augment = augment
         self.hyp = hyp

@@ -177,7 +177,7 @@ def run(
         task_before = task
         task = task if task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
         dataloader = create_dataloader(data[task],
-                                       imgsz,
+                                       max(imgsz),
                                        batch_size,
                                        stride,
                                        single_cls,

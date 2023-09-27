@@ -96,12 +96,16 @@ def run(
                     result = val_det(data, w, batch_size, imgsz, plots=False, device=device, task='speed', half=half)
                     metric = result[0][3]  # (p, r, map50, map, *loss(box, obj, cls))
                 speed = result[2][1]  # times (preprocess, inference, postprocess)
-                y.append([name, round(file_size(w), 1), round(metric, 4), round(speed, 2), 1000/round(speed, 2)])  # MB, mAP, t_inference
+                speed_post = result[2][2]
+                speed_pre = result[2][0]
+                y.append([name, round(file_size(w), 1), round(metric, 4), round(speed, 2), round(speed_post, 2),
+                          round(speed_pre, 2), 1000 / round(speed, 2), 1000 / round(speed_post, 2),
+                          1000 / round(speed_pre, 2)])  # MB, mAP, t_inference
             except Exception as e:
                 if hard_fail:
                     assert type(e) is AssertionError, f'Benchmark --hard-fail for {name}: {e}'
                 LOGGER.warning(f'WARNING ⚠️ Benchmark failure for {name}: {e}')
-                y.append([name, None, None, None, None])  # mAP, t_inference
+                y.append([name, None, None, None, None, None, None, None, None])  # mAP, t_inference
             if pt_only and i == 0:
                 break  # break after PyTorch
 
