@@ -456,16 +456,17 @@ class LoadImagesAndLabels(Dataset):
                  prefix='',
                  profile=None):
         self.profile = profile
-        self.img_size = img_size
+        self.img_size = max(img_size)
+        self.speed_img_size = img_size
         self.augment = augment
         self.hyp = hyp
         self.image_weights = image_weights
         self.rect = False if image_weights else rect
         self.mosaic = self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)
-        self.mosaic_border = [-img_size // 2, -img_size // 2]
+        self.mosaic_border = [-self.img_size // 2, -self.img_size // 2]
         self.stride = stride
         self.path = path
-        self.albumentations = Albumentations(size=img_size) if augment else None
+        self.albumentations = Albumentations(size=self.img_size) if augment else None
 
         try:
             f = []  # image files
@@ -571,7 +572,7 @@ class LoadImagesAndLabels(Dataset):
                 elif mini > 1:
                     shapes[i] = [1, 1 / mini]
 
-            self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(int) * stride
+            self.batch_shapes = np.ceil(np.array(shapes) * self.img_size / stride + pad).astype(int) * stride
 
         # Cache images into RAM/disk for faster training
         if cache_images == 'ram' and not self.check_cache_ram(prefix=prefix):
@@ -676,8 +677,8 @@ class LoadImagesAndLabels(Dataset):
             img, (h0, w0), (h, w) = self.load_image(index)
 
             # Letterbox
-            shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
-            img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment, no_pad=True if self.profile == "speed" else False)
+            shape = self.batch_shapes[self.batch[index]] if self.rect else self.speed_img_size if self.profile == "speed" else self.img_size  # final letterboxed shape
+            img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment, profile=(self.profile == "speed"))
             shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
 
             labels = self.labels[index].copy()
