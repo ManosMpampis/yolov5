@@ -108,11 +108,22 @@ def replicate(im, labels):
     return im, labels
 
 
-def letterbox(im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True, stride=32, no_pad=False):
+def letterbox(im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True, stride=32, profile=False):
     # Resize and pad image while meeting stride-multiple constraints
     shape = im.shape[:2]  # current shape [height, width]
     if isinstance(new_shape, int):
         new_shape = (new_shape, new_shape)
+
+    if profile == "speed":
+        ratio = new_shape[0] / shape[0], new_shape[1] / shape[1]
+        new_unpad = shape[0] * ratio[0], shape[1] * ratio[1]
+        divisible_new_unpad = int((new_unpad[1] + stride -1) /stride) * stride, int((new_unpad[1] + stride -1) /stride) * stride
+        dw, dh = divisible_new_unpad[1] - new_unpad[0], divisible_new_unpad[0] - new_unpad[1]
+        dw /= 2
+        dh /= 2
+        if shape[::-1] != new_unpad:  # resize
+            im = cv2.resize(im, divisible_new_unpad, interpolation=cv2.INTER_LINEAR)
+        return im, ratio, (dw, dh)
 
     # Scale ratio (new / old)
     r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
@@ -122,11 +133,6 @@ def letterbox(im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleF
     # Compute padding
     ratio = r, r  # width, height ratios
     new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
-    if no_pad:
-        new_unpad = int(((new_unpad[0]) + stride -1) /stride) * stride, int(((new_unpad[1]) + stride -1) /stride) * stride
-        if shape[::-1] != new_unpad:  # resize
-            im = cv2.resize(im, new_unpad, interpolation=cv2.INTER_LINEAR)
-        return im, ratio, (0, 0)
 
     dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
     if auto:  # minimum rectangle
